@@ -173,7 +173,6 @@ tests/         bun test (incl. the differential fuzzer)
 
 ## Notes
 
-* `@sinclare/typebox` in the brief is `@sinclair/typebox` on npm.
 * TypeBox code is evaluated with `new Function` in the page, exactly as trusted as the JSON you type into the
   app; there is no sandbox.
 * The flow is persisted to `localStorage`.
