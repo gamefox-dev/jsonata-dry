@@ -1,38 +1,74 @@
 {
   "name": "jsonata-dry",
-  "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "A dry-run for JSONata: infer the output JSON Schema, optionality and diagnostics of an expression from an input JSON Schema, without any data.",
+  "keywords": [
+    "jsonata",
+    "json-schema",
+    "type-inference",
+    "static-analysis",
+    "dry-run",
+    "typescript"
+  ],
   "license": "MIT",
+  "homepage": "https://jsonata-dry.gamefox.vn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gamefox-dev/jsonata-dry.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gamefox-dev/jsonata-dry/issues"
+  },
   "type": "module",
+  "sideEffects": false,
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js",
+      "default": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "bun test",
-    "deploy": "bun run build && wrangler deploy"
+    "deploy": "bun run build && wrangler deploy",
+    "build:lib": "bun scripts/build-lib.ts",
+    "prepublishOnly": "bun run build:lib && bun test"
   },
   "dependencies": {
+    "jsonata": "^2.2.2"
+  },
+  "devDependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@sinclair/typebox": "^0.34.52",
     "@tailwindcss/vite": "^4.3.3",
-    "@xyflow/react": "^12.12.0",
-    "jsonata": "^2.2.2",
-    "monaco-editor": "^0.57.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "tailwindcss": "^4.3.3",
-    "zustand": "^5.0.15"
-  },
-  "devDependencies": {
     "@types/bun": "^1.4.2",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "@xyflow/react": "^12.12.0",
+    "monaco-editor": "^0.57.0",
     "oxlint": "^1.81.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
-    "wrangler": "^4.149.0"
+    "wrangler": "^4.149.0",
+    "zustand": "^5.0.15"
   }
 }

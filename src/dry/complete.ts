@@ -1,6 +1,6 @@
-import { BUILTINS, BUILTIN_DOCS } from './builtins'
-import { dryRunTy, type Probe } from './infer'
-import { ANY, hasUndef, members, removeUndef, show, union, type Ty } from './ty'
+import { BUILTINS, BUILTIN_DOCS } from './builtins.ts'
+import { dryRunTy, type Probe } from './infer.ts'
+import { ANY, hasUndef, members, removeUndef, show, union, type Ty } from './ty.ts'
 
 /**
  * Context-aware completion for JSONata, driven by the dry-run engine.

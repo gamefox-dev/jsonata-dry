@@ -1,4 +1,4 @@
-import { removeUndef, members, type Ty } from './ty'
+import { removeUndef, members, type Ty } from './ty.ts'
 
 /** deterministic PRNG so failures are reproducible */
 export function rng(seed: number) {

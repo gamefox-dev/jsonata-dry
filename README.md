@@ -9,7 +9,7 @@ JSON *Schema* and returns a JSON Schema: it tells you what an expression can pro
 produce nothing at all, and what is wrong with it, without any data.
 
 ```ts
-import { dryRun } from './src/dry'
+import { dryRun } from 'jsonata-dry'
 
 const r = dryRun(
   '{ "name": customer.name, "email": customer.email, "n": $count(items) }',
@@ -22,7 +22,17 @@ r.type      // "{ name: string; email?: string; n: integer }"
 r.diagnostics
 ```
 
-## Run it
+## Install
+
+```sh
+npm install jsonata-dry     # ESM, ships its own types; depends only on `jsonata`
+```
+
+Exports: `dryRun` (JSON Schema in → result with `schema`, `optional`, `type`, `diagnostics`), `dryRunTy`
+(same, on the engine's internal type model), and the schema helpers `fromSchema`, `toSchema`, `fromValue`,
+`refName`, `standardizeRefs`.
+
+## Run the flow editor
 
 ```sh
 bun install

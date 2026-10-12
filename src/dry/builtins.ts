@@ -18,7 +18,7 @@ import {
   str,
   union,
   type Ty,
-} from './ty'
+} from './ty.ts'
 
 /** Parsed JSONata function signature, e.g. `<s-nn?:s>` */
 export interface Param {

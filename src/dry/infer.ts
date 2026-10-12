@@ -1,6 +1,6 @@
 import jsonata from 'jsonata'
-import { BUILTINS, type Helpers } from './builtins'
-import { fromSchema, toSchema, type JSONSchema } from './schema'
+import { BUILTINS, type Helpers } from './builtins.ts'
+import { fromSchema, toSchema, type JSONSchema } from './schema.ts'
 import {
   ANY,
   BOOL,
@@ -29,7 +29,7 @@ import {
   widen,
   type FnTy,
   type Ty,
-} from './ty'
+} from './ty.ts'
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info'

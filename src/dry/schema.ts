@@ -16,7 +16,7 @@ import {
   union,
   assignable,
   type Ty,
-} from './ty'
+} from './ty.ts'
 
 export interface JSONSchemaObject {
   $schema?: string
