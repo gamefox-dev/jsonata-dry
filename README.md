@@ -178,3 +178,7 @@ tests/         bun test (incl. the differential fuzzer)
   app; there is no sandbox.
 * The flow is persisted to `localStorage`.
 * React Flow's attribution badge is left visible (hiding it requires a Pro subscription).
+
+## License
+
+[MIT](LICENSE)
