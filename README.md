@@ -1,5 +1,7 @@
 # jsonata-dry
 
+[![jsonata-dry: a typesafe flow, replayed after a run](docs/screenshot.png)](https://jsonata-dry.gamefox.vn)
+
 A **dry-run** for [JSONata](https://jsonata.org), plus a typesafe flow editor built on top of it.
 
 JSONata normally takes a JSON *value*, runs a query, and returns another JSON value. The dry-run takes a
