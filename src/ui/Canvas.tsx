@@ -66,7 +66,10 @@ function Inner() {
         isValidConnection={isValidConnection}
         onNodeClick={(_, n) => setSelection({ kind: 'node', id: n.id })}
         onEdgeClick={(_, e) => setSelection({ kind: 'edge', id: e.id })}
-        onPaneClick={() => setSelection(null)}
+        onPaneClick={() => {
+          // clicking the canvas must not close the run panel mid-replay
+          if (useStore.getState().selection?.kind !== 'run') setSelection(null)
+        }}
         colorMode="dark"
         snapToGrid
         snapGrid={[10, 10]}

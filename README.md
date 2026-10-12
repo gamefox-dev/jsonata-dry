@@ -127,11 +127,40 @@ initial ▶└────────┘ ─ results ─▶ …        ─ done
 
 Two examples are built in (toolbar): a clean order-checkout flow, and one that triggers every diagnostic.
 
+### Running a flow
+
+**▶ Run** (toolbar) executes the flow for real and replays it on the canvas.
+
+* JSONata expressions are evaluated with the real library. The input is JSON you edit in the Run panel
+  (validated and completed against the flow's input type; *New sample* generates one).
+* Functions have no implementation, so each can carry a **mock**: a JSONata expression where `$` is the
+  argument (set in the function's definition). Without one, a deterministic sample of the return type is used.
+* The engine follows the same rules as the static analysis: nodes wait for their data and, if lazy, their
+  trigger; a branch fires one gate; a loop runs its body once per item in a fresh scope; the first synchronous
+  return ends the flow; async branches keep running but their returns are discarded (and reported).
+* The **replay** steps through the trace (⏮ ◀ ▶ ⏭, play/pause, 0.5×–2×, scrubber): the current node is
+  ringed, wires that carried something light up and show the actual value, nodes that never ran fade, and
+  every node shows its step number and result. Click a step to see exactly what it received and produced.
+
+### Editor assistance
+
+* **JSON Schema**: completion and hover for keywords, `type` values, `format`, snippets for common shapes,
+  `$ref` names from your named types, and `required` names from the sibling `properties`.
+* **TypeBox**: the real `@sinclair/typebox` typings are loaded into Monaco, so `t.` shows signatures,
+  option objects (`t.String({ minLength })`) and docs; `t.Ref("` completes named types.
+* **JSONata**: completion is driven by the dry-run itself. The text before the cursor is made parseable and
+  dry-run against the real input type, and the inferer reports what the cursor is looking at, so `items.`,
+  `items[` (the item's fields), `$map(items, function($v){ $v.` and `{ "a": customer.` all complete with
+  field types and optionality. `$` completes variables in scope (assignments, lambda parameters, connected
+  inputs) and built-in functions with signature, docs and a snippet. Hover shows the inferred type.
+
 ## Layout
 
 ```
-src/dry/       the engine: ty.ts (types), schema.ts (JSON Schema ⇄ types), builtins.ts, infer.ts
-src/flow/      model.ts (nodes/handles), analyze.ts (types, liveness, async, returns), examples.ts
+src/dry/       the engine: ty.ts (types), schema.ts (JSON Schema ⇄ types), builtins.ts, infer.ts,
+               complete.ts (completion + hover), sample.ts (random values of a type)
+src/flow/      model.ts (nodes/handles), analyze.ts (types, liveness, async, returns), run.ts (executor),
+               examples.ts
 src/schema/    typebox.ts (evaluate TypeBox code / print schemas as TypeBox)
 src/ui/        canvas, nodes, panels, Monaco editors
 tests/         bun test (incl. the differential fuzzer)

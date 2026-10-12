@@ -55,7 +55,7 @@ export function SchemaEditor({
         ))}
       </div>
       <div className="min-h-0 flex-1">
-        {mode === 'json' && <JsonPane spec={spec} onChange={onChange} path={`schema-${pathKey}.json`} />}
+        {mode === 'json' && <JsonPane spec={spec} onChange={onChange} path={`schema-${pathKey}.json`} typeNames={typeNames} />}
         {mode === 'form' && (
           <div className="h-full overflow-auto">
             <SchemaForm
@@ -65,7 +65,7 @@ export function SchemaEditor({
             />
           </div>
         )}
-        {mode === 'typebox' && <TypeBoxPane spec={spec} onChange={onChange} path={`typebox-${pathKey}.ts`} />}
+        {mode === 'typebox' && <TypeBoxPane spec={spec} onChange={onChange} path={`typebox-${pathKey}.ts`} typeNames={typeNames} />}
       </div>
     </div>
   )
@@ -88,10 +88,12 @@ function JsonPane({
   spec,
   onChange,
   path,
+  typeNames,
 }: {
   spec: SchemaSpec
   onChange: (s: SchemaSpec) => void
   path: string
+  typeNames: string[]
 }) {
   const canonical = useMemo(() => JSON.stringify(spec.schema, null, 2), [spec.schema])
   const [text, setText] = useState(canonical)
@@ -112,6 +114,7 @@ function JsonPane({
       <div className="min-h-0 flex-1">
         <LazyCode
           language="json"
+          typeNames={typeNames}
           path={path}
           value={text}
           onChange={(v) => {
@@ -136,10 +139,12 @@ function TypeBoxPane({
   spec,
   onChange,
   path,
+  typeNames,
 }: {
   spec: SchemaSpec
   onChange: (s: SchemaSpec) => void
   path: string
+  typeNames: string[]
 }) {
   const source = spec.typebox ?? schemaToTypeBox(spec.schema)
   const [text, setText] = useState(source)
@@ -152,6 +157,7 @@ function TypeBoxPane({
       <div className="min-h-0 flex-1">
         <LazyCode
           language="typescript"
+          typeNames={typeNames}
           path={path}
           value={text}
           onChange={(v) => {

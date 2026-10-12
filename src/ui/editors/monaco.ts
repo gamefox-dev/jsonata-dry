@@ -3,9 +3,11 @@ import * as monaco from 'monaco-editor'
 import editorWorker from 'monaco-editor/editor/editor.worker?worker'
 import jsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import tsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
-import { BUILTINS } from '../../dry/builtins'
-
-const BUILTIN_NAMES = Object.keys(BUILTINS).sort()
+import { BUILTIN_DOCS } from '../../dry/builtins'
+import { completeAt, hoverAt } from '../../dry/complete'
+import { show, type Ty } from '../../dry/ty'
+import { buildMetaSchema } from './metaSchema'
+import { locate, requiredArrayOwner } from './jsonPath'
 
 /**
  * Monaco is bundled locally (workers via Vite's `?worker`) instead of being fetched from a CDN,
@@ -80,93 +82,215 @@ monaco.editor.defineTheme('dry-dark', {
 
 /** what the expression editor knows about its surroundings, for completion */
 export interface CompletionContext {
-  fields: string[]
-  variables: string[]
+  /** type of `$`, or null when nothing is connected */
+  input: Ty | null
+  /** types of the extra named inputs, available as `$name` */
+  bindings: Record<string, Ty>
 }
 const contexts = new Map<string, CompletionContext>()
 export const setCompletionContext = (uri: string, ctx: CompletionContext) => contexts.set(uri, ctx)
 export const clearCompletionContext = (uri: string) => contexts.delete(uri)
 
+const K = monaco.languages.CompletionItemKind
+const KIND = {
+  field: K.Field,
+  variable: K.Variable,
+  function: K.Function,
+  keyword: K.Keyword,
+} as const
+
 monaco.languages.registerCompletionItemProvider('jsonata', {
-  triggerCharacters: ['$', '.'],
+  triggerCharacters: ['$', '.', '[', '(', ',', ' '],
   provideCompletionItems(model, position) {
     const ctx = contexts.get(model.uri.toString())
-    const word = model.getWordUntilPosition(position)
-    const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
-    const K = monaco.languages.CompletionItemKind
-    const suggestions: monaco.languages.CompletionItem[] = [
-      ...(ctx?.fields ?? []).map((f) => ({
-        label: f,
-        kind: K.Field,
-        insertText: /^[A-Za-z_]\w*$/.test(f) ? f : '`' + f + '`',
+    if (!ctx) return { suggestions: [] }
+    const offset = model.getOffsetAt(position)
+    const r = completeAt(model.getValue(), offset, ctx.input, ctx.bindings)
+    const a = model.getPositionAt(r.from)
+    const b = model.getPositionAt(r.to)
+    const range = new monaco.Range(a.lineNumber, a.column, b.lineNumber, b.column)
+    return {
+      suggestions: r.items.map((it) => ({
+        label: it.kind === 'variable' || it.kind === 'function' ? `$${it.name}` : it.name,
+        kind: KIND[it.kind],
+        insertText: it.insert,
+        insertTextRules: it.snippet ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+        filterText: it.filter,
+        detail: it.detail,
+        documentation: it.doc ? { value: it.doc } : undefined,
+        sortText: `${it.rank}${it.optional ? 'b' : 'a'}${it.name}`,
         range,
-        detail: 'field of the input',
+        tags: undefined,
       })),
-      ...(ctx?.variables ?? []).map((v) => ({
-        label: '$' + v,
-        kind: K.Variable,
-        insertText: '$' + v,
-        range: new monaco.Range(position.lineNumber, Math.max(1, word.startColumn - 1), position.lineNumber, word.endColumn),
-        detail: 'connected variable',
-      })),
-      ...BUILTIN_NAMES.map((n) => ({
-        label: '$' + n,
-        kind: K.Function,
-        insertText: '$' + n + '($0)',
-        insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-        range: new monaco.Range(position.lineNumber, Math.max(1, word.startColumn - 1), position.lineNumber, word.endColumn),
-        detail: 'JSONata function',
-      })),
-    ]
-    return { suggestions }
+    }
   },
 })
 
-/* ---------- TypeBox typings for the schema editor ---------- */
+monaco.languages.registerHoverProvider('jsonata', {
+  provideHover(model, position) {
+    const ctx = contexts.get(model.uri.toString())
+    if (!ctx) return null
+    const h = hoverAt(model.getValue(), model.getOffsetAt(position), ctx.input, ctx.bindings)
+    if (!h) return null
+    const a = model.getPositionAt(h.start)
+    const b = model.getPositionAt(h.end)
+    const doc = h.kind === 'call' && h.name ? BUILTIN_DOCS[h.name] : undefined
+    const contents = [
+      {
+        value:
+          '```ts\n' +
+          (h.kind === 'call' && h.name ? `$${h.name}(${doc?.args ?? ''}): ` : h.name ? `${h.kind === 'variable' ? '$' : ''}${h.name}: ` : '') +
+          show(h.ty) +
+          '\n```',
+      },
+      ...(doc ? [{ value: doc.doc }] : []),
+    ]
+    return { range: new monaco.Range(a.lineNumber, a.column, b.lineNumber, b.column), contents }
+  },
+})
 
-const TYPEBOX_DTS = `
-interface TSchema { readonly [key: string]: unknown }
-interface TOptions { title?: string; description?: string; default?: unknown; examples?: unknown[]; [k: string]: unknown }
-interface TBuilder {
-  String(options?: TOptions & { minLength?: number; maxLength?: number; pattern?: string; format?: string }): TSchema
-  Number(options?: TOptions & { minimum?: number; maximum?: number }): TSchema
-  Integer(options?: TOptions & { minimum?: number; maximum?: number }): TSchema
-  Boolean(options?: TOptions): TSchema
-  Null(options?: TOptions): TSchema
-  Any(options?: TOptions): TSchema
-  Unknown(options?: TOptions): TSchema
-  Never(options?: TOptions): TSchema
-  Literal(value: string | number | boolean, options?: TOptions): TSchema
-  Object(properties: Record<string, TSchema>, options?: TOptions & { additionalProperties?: boolean | TSchema }): TSchema
-  Array(items: TSchema, options?: TOptions & { minItems?: number; maxItems?: number }): TSchema
-  Tuple(items: TSchema[], options?: TOptions): TSchema
-  Record(key: TSchema, value: TSchema, options?: TOptions): TSchema
-  Union(anyOf: TSchema[], options?: TOptions): TSchema
-  Intersect(allOf: TSchema[], options?: TOptions): TSchema
-  Optional(schema: TSchema): TSchema
-  Partial(schema: TSchema): TSchema
-  Required(schema: TSchema): TSchema
-  Pick(schema: TSchema, keys: string[]): TSchema
-  Omit(schema: TSchema, keys: string[]): TSchema
-  Ref(name: string): TSchema
+/* ---------- named types: suggested for `$ref` / `t.Ref()` ---------- */
+
+let typeNames: string[] = []
+
+const jsonDefaults = monaco.json.jsonDefaults
+/** schemas for specific JSON models (e.g. the run input), keyed by model path */
+const modelSchemas = new Map<string, unknown>()
+const applyMetaSchema = () =>
+  jsonDefaults.setDiagnosticsOptions({
+    validate: true,
+    allowComments: false,
+    enableSchemaRequest: false,
+    schemas: [
+      // every `schema-*.json` model is a JSON Schema being authored
+      {
+        uri: 'inmemory://meta/json-schema.json',
+        fileMatch: ['*schema-*.json'],
+        schema: buildMetaSchema(typeNames),
+      },
+      ...[...modelSchemas].map(([path, schema]) => ({
+        uri: `inmemory://schemas/${path}`,
+        fileMatch: ['*' + path],
+        schema: schema as object,
+      })),
+    ],
+  })
+applyMetaSchema()
+
+/** validate (and complete) the JSON model at `path` against `schema`; pass null to remove */
+export function setModelJsonSchema(path: string, schema: unknown | null) {
+  const had = modelSchemas.get(path)
+  if (schema === null) modelSchemas.delete(path)
+  else {
+    if (JSON.stringify(had) === JSON.stringify(schema)) return
+    modelSchemas.set(path, schema)
+  }
+  applyMetaSchema()
 }
-/** TypeBox builder (alias of Type) */
-declare const t: TBuilder
-declare const Type: TBuilder
-`
+
+/** call when the set of named types changes */
+export function setTypeNames(names: string[]) {
+  if (names.join('\u0000') === typeNames.join('\u0000')) return
+  typeNames = names
+  applyMetaSchema()
+}
+
+/** `required: ["…"]` completes with the names of the sibling `properties` */
+monaco.languages.registerCompletionItemProvider('json', {
+  triggerCharacters: ['"'],
+  provideCompletionItems(model, position) {
+    const text = model.getValue()
+    const offset = model.getOffsetAt(position)
+    const loc = locate(text, offset)
+    const owner = requiredArrayOwner(loc)
+    if (!owner) return { suggestions: [] }
+    let doc: unknown
+    try {
+      doc = JSON.parse(text)
+    } catch {
+      return { suggestions: [] }
+    }
+    let node: unknown = doc
+    for (const k of owner) node = (node as Record<string | number, unknown> | undefined)?.[k]
+    const o = node as { properties?: Record<string, unknown>; required?: unknown } | undefined
+    const taken = new Set(Array.isArray(o?.required) ? (o?.required as string[]) : [])
+    const word = model.getWordUntilPosition(position)
+    const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
+    return {
+      suggestions: Object.keys(o?.properties ?? {})
+        .filter((k) => !taken.has(k))
+        .map((k) => ({
+          label: k,
+          kind: monaco.languages.CompletionItemKind.Property,
+          insertText: loc.inString ? k : JSON.stringify(k),
+          detail: 'property of this object',
+          range,
+        })),
+    }
+  },
+})
+
+/* ---------- TypeBox: the real typings ---------- */
+
 const ts = monaco.typescript
-ts.typescriptDefaults.addExtraLib(TYPEBOX_DTS, 'file:///typebox-globals.d.ts')
+const typeboxFiles = import.meta.glob('/node_modules/@sinclair/typebox/build/cjs/**/*.d.ts', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>
+for (const [path, source] of Object.entries(typeboxFiles)) {
+  ts.typescriptDefaults.addExtraLib(source, 'file://' + path)
+}
+ts.typescriptDefaults.addExtraLib(
+  JSON.stringify({ name: '@sinclair/typebox', version: '0.34.0', types: 'build/cjs/index.d.ts' }),
+  'file:///node_modules/@sinclair/typebox/package.json',
+)
+ts.typescriptDefaults.addExtraLib(
+  `import type * as TB from '@sinclair/typebox'
+declare global {
+  /** TypeBox builder. \`t.Object({ name: t.String() })\` */
+  const t: typeof TB.Type
+  /** TypeBox builder (same as \`t\`) */
+  const Type: typeof TB.Type
+  type Static<T extends TB.TSchema> = TB.Static<T>
+  type TSchema = TB.TSchema
+}
+export {}
+`,
+  'file:///typebox-globals.d.ts',
+)
 ts.typescriptDefaults.setCompilerOptions({
   target: ts.ScriptTarget.ES2020,
   allowNonTsExtensions: true,
-  noLib: false,
+  moduleResolution: ts.ModuleResolutionKind.NodeJs,
   strict: true,
+  noEmit: true,
 })
 ts.typescriptDefaults.setDiagnosticsOptions({
   noSemanticValidation: false,
   noSyntaxValidation: false,
   // `return` at the top level is how multi-statement programs end
   diagnosticCodesToIgnore: [1108, 1375, 1378, 2451, 6133],
+})
+
+/** `t.Ref("` completes with the named types */
+monaco.languages.registerCompletionItemProvider('typescript', {
+  triggerCharacters: ['"', "'", '`'],
+  provideCompletionItems(model, position) {
+    const before = model.getValueInRange(new monaco.Range(position.lineNumber, 1, position.lineNumber, position.column))
+    if (!/\b(?:t|Type)\.Ref\(\s*["'`][\w$-]*$/.test(before)) return { suggestions: [] }
+    const word = model.getWordUntilPosition(position)
+    const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
+    return {
+      suggestions: typeNames.map((n) => ({
+        label: n,
+        kind: monaco.languages.CompletionItemKind.Reference,
+        insertText: n,
+        detail: 'named type',
+        range,
+      })),
+    }
+  },
 })
 
 export { monaco }

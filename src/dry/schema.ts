@@ -222,3 +222,27 @@ export function toSchema(t: Ty): JSONSchema {
     }
   }
 }
+
+/**
+ * Rewrite `$ref: "Name"` (how named types are referenced in the app) to standard
+ * `#/$defs/Name` pointers and attach the definitions, so generic JSON Schema tooling can use it.
+ */
+export function standardizeRefs(schema: JSONSchema, defs: Record<string, JSONSchema>): JSONSchema {
+  const walk = (s: unknown): unknown => {
+    if (Array.isArray(s)) return s.map(walk)
+    if (s === null || typeof s !== 'object') return s
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(s)) {
+      if (k === '$ref' && typeof v === 'string') {
+        const name = refName(v)
+        out[k] = name in defs ? `#/$defs/${name}` : v
+      } else out[k] = walk(v)
+    }
+    return out
+  }
+  const base = walk(schema)
+  const $defs = Object.fromEntries(Object.entries(defs).map(([k, v]) => [k, walk(v)]))
+  return typeof base === 'object' && base !== null && !Array.isArray(base)
+    ? ({ ...(base as object), $defs } as JSONSchema)
+    : (base as JSONSchema)
+}

@@ -1,9 +1,10 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { fromSchema, members, show } from '../dry'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { ANY, fromSchema, show } from '../dry'
 import type { Diagnostic } from '../dry'
 import type { Msg, TypeInfo } from '../flow/analyze'
 import type { FlowNode } from '../flow/model'
-import { useStore } from '../store'
+import { sampleInput, useStore } from '../store'
+import { standardizeRefs } from '../dry'
 import { LazyCode } from './editors/LazyCode'
 import { SchemaEditor } from './editors/SchemaEditor'
 import { KIND_STYLE } from './nodes/kinds'
@@ -114,18 +115,6 @@ function Split({ editor, side }: { editor: ReactNode; side: ReactNode }) {
   )
 }
 
-const fieldNames = (info: TypeInfo | null | undefined): string[] => {
-  const out = new Set<string>()
-  const walk = (t: TypeInfo['ty'], depth = 0) => {
-    for (const m of members(t)) {
-      if (m.k === 'arr' && depth < 3) walk(m.item, depth + 1)
-      if (m.k === 'obj') Object.keys(m.props).forEach((k) => out.add(k))
-    }
-  }
-  if (info) walk(info.ty)
-  return [...out]
-}
-
 /* ---------- inspectors ---------- */
 
 function ExpressionInspector({ node }: { node: Extract<FlowNode, { type: 'transform' | 'condition' }> }) {
@@ -147,8 +136,13 @@ function ExpressionInspector({ node }: { node: Extract<FlowNode, { type: 'transf
     [dry],
   )
   const completion = useMemo(
-    () => ({ fields: fieldNames(report?.inputs.in), variables: node.data.variables }),
-    [report?.inputs.in, node.data.variables],
+    () => ({
+      input: report?.inputs.in?.ty ?? null,
+      bindings: Object.fromEntries(
+        node.data.variables.map((v) => [v, report?.inputs[`var:${v}`]?.ty ?? ANY]),
+      ),
+    }),
+    [report?.inputs, node.data.variables],
   )
   const isCondition = node.type === 'condition'
   const addVar = () => {
@@ -512,6 +506,11 @@ function FunctionInspector({ id }: { id: string }) {
   const types = useStore((s) => s.doc.types)
   const names = useMemo(() => types.map((x) => x.name), [types])
   const update = useStore((s) => s.updateFunction)
+  const defs = useMemo(() => Object.fromEntries(types.map((x) => [x.name, x.spec.schema])), [types])
+  const mockCtx = useMemo(
+    () => ({ input: f ? fromSchema(f.input.schema, { defs }) : null, bindings: {} }),
+    [f, defs],
+  )
   if (!f) return null
   return (
     <>
@@ -529,7 +528,7 @@ function FunctionInspector({ id }: { id: string }) {
           onChange={(e) => update(id, { description: e.target.value })}
         />
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-2 divide-x divide-zinc-800">
+      <div className="grid min-h-0 flex-1 grid-cols-3 divide-x divide-zinc-800">
         {(['input', 'output'] as const).map((side) => (
           <div key={side} className="flex min-h-0 min-w-0 flex-col">
             <div className="px-3 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -546,6 +545,25 @@ function FunctionInspector({ id }: { id: string }) {
             </div>
           </div>
         ))}
+        <div className="flex min-h-0 min-w-0 flex-col">
+          <div className="px-3 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Mock for runs (JSONata, <code>$</code> is the argument)
+          </div>
+          <div className="min-h-0 flex-1">
+            <LazyCode
+              language="jsonata"
+              path={`mock-${id}.jsonata`}
+              value={f.mock ?? ''}
+              onChange={(mock) => update(id, { mock })}
+              completion={mockCtx}
+            />
+          </div>
+          <div className="shrink-0 border-t border-zinc-800 px-3 py-1 text-[11px] text-zinc-500">
+            {f.mock?.trim()
+              ? 'Used when the flow is run.'
+              : 'Empty: a sample of the return type is generated.'}
+          </div>
+        </div>
       </div>
     </>
   )
@@ -677,6 +695,279 @@ function FlowSummary() {
   )
 }
 
+
+/* ---------- run ---------- */
+
+const pretty = (v: unknown) => (v === undefined ? 'undefined' : (JSON.stringify(v, null, 2) ?? String(v)))
+const oneLine = (v: unknown, max = 70) => {
+  const t = v === undefined ? 'undefined' : (JSON.stringify(v) ?? String(v))
+  return t.length > max ? t.slice(0, max - 1) + '…' : t
+}
+const SPEEDS = [
+  { label: '0.5×', ms: 800 },
+  { label: '1×', ms: 400 },
+  { label: '2×', ms: 160 },
+] as const
+
+function RunInspector() {
+  const run = useStore((s) => s.run)
+  const doc = useStore((s) => s.doc)
+  const { startRun, setRunInput, generateRunInput, setCursor, stepRun, setPlaying, clearRun } = useStore.getState()
+  const [speed, setSpeed] = useState(1)
+
+  const inputNode = doc.nodes.find((n) => n.type === 'input')
+  const inputSchema = useMemo(() => {
+    if (!inputNode || inputNode.type !== 'input') return undefined
+    const defs = Object.fromEntries(doc.types.map((t) => [t.name, t.spec.schema]))
+    return standardizeRefs(inputNode.data.spec.schema, defs)
+  }, [inputNode, doc.types])
+  const text = run.inputText ?? sampleInput(doc)
+
+  // playback
+  useEffect(() => {
+    if (!run.playing) return
+    const t = setInterval(() => useStore.getState().stepRun(1), SPEEDS[speed].ms)
+    return () => clearInterval(t)
+  }, [run.playing, speed])
+
+  const result = run.result
+  const n = result?.steps.length ?? 0
+  const at = result ? (run.cursor === null ? n - 1 : run.cursor) : -1
+  const step = result && at >= 0 ? result.steps[at] : null
+  const label = (id: string) => {
+    const node = doc.nodes.find((x) => x.id === id)
+    return node ? node.data.label || KIND_STYLE[node.type as keyof typeof KIND_STYLE]?.name || node.type : id
+  }
+  const kindOf = (id: string) => doc.nodes.find((x) => x.id === id)?.type as keyof typeof KIND_STYLE | undefined
+
+  const statusBadge = result && (
+    <span
+      className={`rounded px-2 py-0.5 text-[11px] font-medium ${
+        result.status === 'returned'
+          ? 'bg-emerald-500/15 text-emerald-300'
+          : result.status === 'failed'
+            ? 'bg-red-500/15 text-red-300'
+            : 'bg-amber-500/15 text-amber-300'
+      }`}
+    >
+      {result.status === 'returned' ? 'returned' : result.status === 'failed' ? 'failed' : 'finished without returning'}
+    </span>
+  )
+
+  return (
+    <div className="flex min-h-0 flex-1">
+      {/* input */}
+      <div className="flex min-h-0 w-[32%] min-w-56 flex-col border-r border-zinc-800">
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-zinc-800 px-2 py-1.5">
+          <button
+            type="button"
+            disabled={run.running}
+            onClick={() => void startRun()}
+            className="rounded bg-emerald-500 px-3 py-1 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50"
+          >
+            ▶ Run
+          </button>
+          <button
+            type="button"
+            className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+            onClick={() => generateRunInput()}
+            title="Generate a random input that matches the flow's input type"
+          >
+            New sample
+          </button>
+          <span className="ml-auto text-[10px] uppercase tracking-wide text-zinc-500">input</span>
+        </div>
+        <div className="min-h-0 flex-1">
+          <LazyCode
+            language="json"
+            path="run-input.json"
+            value={text}
+            onChange={(t) => setRunInput(t)}
+            jsonSchema={inputSchema}
+          />
+        </div>
+        {run.parseError && (
+          <div className="shrink-0 border-t border-zinc-800 px-3 py-1 text-[11px] text-red-400">{run.parseError}</div>
+        )}
+      </div>
+
+      {/* timeline */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-zinc-800">
+        {!result ? (
+          <div className="p-4 text-xs leading-5 text-zinc-500">
+            {run.running ? (
+              'Running…'
+            ) : (
+              <>
+                Press <span className="text-emerald-400">▶ Run</span> to execute the flow with the input on the left.
+                JSONata expressions are evaluated for real; functions are answered by their mock (set one in the
+                function’s definition) or by a generated sample of their return type. The canvas then replays the
+                execution: lit wires carried a value, dimmed nodes never ran.
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="flex shrink-0 items-center gap-1.5 border-b border-zinc-800 px-2 py-1.5">
+              <button type="button" className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs hover:bg-zinc-700" title="First step" onClick={() => setCursor(0)}>
+                ⏮
+              </button>
+              <button type="button" className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs hover:bg-zinc-700" title="Previous step" onClick={() => stepRun(-1)}>
+                ◀
+              </button>
+              <button
+                type="button"
+                className="rounded bg-cyan-500 px-2.5 py-0.5 text-xs font-semibold text-zinc-950 hover:bg-cyan-400"
+                onClick={() => setPlaying(!run.playing)}
+              >
+                {run.playing ? '❚❚ Pause' : '▶ Play'}
+              </button>
+              <button type="button" className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs hover:bg-zinc-700" title="Next step" onClick={() => stepRun(1)}>
+                ▶
+              </button>
+              <button type="button" className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs hover:bg-zinc-700" title="Show the whole run" onClick={() => setCursor(null)}>
+                ⏭
+              </button>
+              <select
+                className="ml-1 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-[11px] text-zinc-300"
+                value={speed}
+                onChange={(e) => setSpeed(Number(e.target.value))}
+              >
+                {SPEEDS.map((s, i) => (
+                  <option key={s.label} value={i}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0, n - 1)}
+                value={Math.max(0, at)}
+                onChange={(e) => setCursor(Number(e.target.value))}
+                className="mx-2 min-w-16 flex-1"
+              />
+              <span className="shrink-0 font-mono text-[11px] text-zinc-400">
+                {at + 1}/{n}
+              </span>
+              <button type="button" className="ml-1 rounded px-1.5 text-zinc-500 hover:text-zinc-200" title="Clear the run" onClick={clearRun}>
+                ✕
+              </button>
+            </div>
+            <ol className="min-h-0 flex-1 overflow-y-auto py-1">
+              {result.steps.map((s, i) => {
+                const k = kindOf(s.nodeId)
+                const active = i === at
+                const future = i > at
+                return (
+                  <li key={s.seq}>
+                    <button
+                      type="button"
+                      onClick={() => setCursor(i)}
+                      className={`flex w-full items-start gap-2 px-3 py-1 text-left text-xs ${
+                        active ? 'bg-cyan-500/15' : 'hover:bg-zinc-900'
+                      } ${future ? 'opacity-40' : ''}`}
+                      style={{ paddingLeft: 12 + s.scope.length * 14 }}
+                    >
+                      <span className="w-6 shrink-0 text-right font-mono text-[10px] text-zinc-500">{s.seq}</span>
+                      <span
+                        className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded text-[9px] font-bold text-zinc-950"
+                        style={{ background: k ? KIND_STYLE[k].accent : '#71717a' }}
+                      >
+                        {k ? KIND_STYLE[k].glyph : '?'}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="font-medium text-zinc-200">{label(s.nodeId)}</span>
+                        {s.scope.length > 0 && (
+                          <span className="ml-1.5 rounded bg-violet-500/20 px-1 font-mono text-[10px] text-violet-300">
+                            {s.scope.map((c) => `${label(c.loopId)}[${c.index}]`).join(' › ')}
+                          </span>
+                        )}
+                        {s.detached && (
+                          <span className="ml-1.5 rounded bg-sky-500/20 px-1 text-[10px] text-sky-300">async branch</span>
+                        )}
+                        <span className="mt-px block truncate font-mono text-[10.5px] text-zinc-500">
+                          {s.error ? (
+                            <span className="text-red-400">{s.error}</span>
+                          ) : s.fired.length > 0 && !('out' in s.outputs) && s.outputs.results === undefined ? (
+                            `→ ${s.fired.join(', ')}`
+                          ) : (
+                            oneLine('out' in s.outputs ? s.outputs.out : (s.outputs.results ?? s.outputs.in))
+                          )}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ol>
+          </>
+        )}
+      </div>
+
+      {/* result + step detail */}
+      <div className="w-[30%] min-w-56 shrink-0 overflow-y-auto">
+        {result && (
+          <>
+            <Section title="Outcome" right={statusBadge}>
+              {result.status === 'returned' && (
+                <>
+                  <div className="mb-1 text-[11px] text-zinc-500">
+                    returned by <span className="text-indigo-300">{label(result.returnedBy ?? '')}</span>
+                  </div>
+                  <pre className="max-h-48 overflow-auto rounded bg-zinc-950 p-2 font-mono text-[11px] leading-4 text-emerald-200">
+                    {pretty(result.value)}
+                  </pre>
+                </>
+              )}
+              {result.status === 'failed' && (
+                <div className="text-xs leading-5 text-red-300">
+                  {result.error?.nodeId && <span className="font-medium">{label(result.error.nodeId)}: </span>}
+                  {result.error?.message}
+                </div>
+              )}
+              {result.status === 'finished' && (
+                <div className="text-xs leading-5 text-amber-200/90">
+                  Every runnable node ran, but no return was reached.
+                </div>
+              )}
+              {result.ignoredReturns.length > 0 && (
+                <div className="mt-2 text-[11px] leading-4 text-sky-300/90">
+                  Ignored (async branch): {result.ignoredReturns.map(label).join(', ')}
+                </div>
+              )}
+            </Section>
+            {step && (
+              <Section title={`Step ${step.seq} · ${label(step.nodeId)}`}>
+                {step.note && <div className="mb-1.5 text-[11px] text-zinc-500">{step.note}</div>}
+                {Object.keys(step.inputs).length > 0 && (
+                  <>
+                    <div className="mb-0.5 text-[10px] uppercase tracking-wide text-zinc-500">received</div>
+                    <pre className="mb-2 max-h-40 overflow-auto rounded bg-zinc-950 p-2 font-mono text-[11px] leading-4 text-zinc-300">
+                      {pretty(step.inputs)}
+                    </pre>
+                  </>
+                )}
+                {Object.keys(step.outputs).length > 0 && (
+                  <>
+                    <div className="mb-0.5 text-[10px] uppercase tracking-wide text-zinc-500">produced</div>
+                    <pre className="mb-2 max-h-40 overflow-auto rounded bg-zinc-950 p-2 font-mono text-[11px] leading-4 text-cyan-200">
+                      {pretty(step.outputs)}
+                    </pre>
+                  </>
+                )}
+                {step.fired.length > 0 && (
+                  <div className="text-[11px] text-amber-400">fired: {step.fired.join(', ')}</div>
+                )}
+              </Section>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* ---------- panel ---------- */
 
 export function BottomPanel() {
@@ -714,6 +1005,8 @@ export function BottomPanel() {
     body = <TypeDefinitionInspector key={selection.id} id={selection.id} />
   } else if (selection?.kind === 'function') {
     body = <FunctionInspector key={selection.id} id={selection.id} />
+  } else if (selection?.kind === 'run') {
+    body = <RunInspector />
   } else {
     body = <FlowSummary />
   }

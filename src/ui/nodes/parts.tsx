@@ -2,6 +2,7 @@ import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
 import { useEffect, type ReactNode } from 'react'
 import type { NodeKind } from '../../flow/model'
 import type { NodeReport, TypeInfo } from '../../flow/analyze'
+import type { RunStep } from '../../flow/run'
 import { KIND_STYLE, worst } from './kinds'
 import { useStore } from '../../store'
 import { TypeChip } from '../TypeChip'
@@ -46,14 +47,32 @@ export function NodeShell({
     updateInternals(id)
   }, [id, gateKey, handleKey, updateInternals])
 
-  const border = selected
-    ? 'border-indigo-400 ring-2 ring-indigo-400/40'
-    : sev === 'error'
+  const rv = useStore((s) => s.run.view?.nodes[id])
+  const runActive = useStore((s) => s.run.view !== null)
+
+  const border = rv?.current
+    ? rv.error
+      ? 'border-red-400 ring-2 ring-red-400/50'
+      : 'border-cyan-400 ring-2 ring-cyan-400/50'
+    : selected
+      ? 'border-indigo-400 ring-2 ring-indigo-400/40'
+      : rv?.error
+        ? 'border-red-500'
+        : rv
+          ? 'border-cyan-700'
+          : sev === 'error'
       ? 'border-red-500/70'
       : sev === 'warning'
         ? 'border-amber-500/60'
         : 'border-zinc-700'
-  const dim = status === 'unreachable' ? 'opacity-45' : status === 'dead' ? 'opacity-55' : ''
+  const dim =
+    runActive && !rv
+      ? 'opacity-30'
+      : status === 'unreachable'
+        ? 'opacity-45'
+        : status === 'dead'
+          ? 'opacity-55'
+          : ''
   const dashed = status !== 'live' ? 'border-dashed' : ''
   const msgs = report?.messages.filter((m) => m.severity !== 'info') ?? []
 
@@ -92,6 +111,17 @@ export function NodeShell({
           </span>
         )}
         {headerExtra}
+        {rv && (
+          <span
+            className={`rounded px-1 font-mono text-[9px] font-semibold ${
+              rv.error ? 'bg-red-500/25 text-red-200' : 'bg-cyan-500/20 text-cyan-200'
+            }`}
+            title={`Executed ${rv.count} time${rv.count === 1 ? '' : 's'} (step ${rv.seqs.join(', ')})`}
+          >
+            #{rv.seqs[0]}
+            {rv.count > 1 ? ` ×${rv.count}` : ''}
+          </span>
+        )}
         {status === 'dead' && (
           <span className="rounded bg-zinc-700/60 px-1 text-[9px] font-semibold uppercase text-zinc-300" title={report?.deadReason}>
             dead
@@ -118,6 +148,8 @@ export function NodeShell({
           </span>
         </div>
       )}
+
+      {rv && <RunValue node={rv.last} kind={kind} />}
 
       {gates && gates.length > 0 && (
         <div className="relative flex h-6 items-end justify-around border-t border-zinc-800/60 px-2 pb-0.5">
@@ -191,6 +223,32 @@ export function DataOut({
         {detached ? ' (async)' : ''}
       </span>
       <TypeChip info={info} className="ml-auto" />
+    </div>
+  )
+}
+
+const short = (v: unknown, max = 96) => {
+  const t = v === undefined ? 'undefined' : (JSON.stringify(v) ?? String(v))
+  return t.length > max ? t.slice(0, max - 1) + '…' : t
+}
+
+/** what this node produced in the run shown on the canvas */
+function RunValue({ node, kind }: { node: RunStep; kind: NodeKind }) {
+  let text: string
+  if (node.error) text = node.error
+  else if (kind === 'branch') text = `→ ${node.fired[0] ?? '…'}`
+  else if (kind === 'return') text = short(node.outputs.in)
+  else if (kind === 'loop') text = `${node.note ?? ''}${'results' in node.outputs ? ' → ' + short(node.outputs.results, 60) : ''}`
+  else if (kind === 'input') text = short(node.outputs.out)
+  else text = short(node.outputs.out)
+  return (
+    <div
+      className={`border-t px-3 py-1 font-mono text-[10px] leading-4 ${
+        node.error ? 'border-red-900/60 bg-red-950/40 text-red-300' : 'border-cyan-900/50 bg-cyan-950/30 text-cyan-200'
+      }`}
+      title={text}
+    >
+      <span className="line-clamp-2 break-all">{kind === 'branch' || node.error ? text : `= ${text}`}</span>
     </div>
   )
 }

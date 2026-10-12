@@ -49,10 +49,28 @@ export interface DryRunOptions {
   functions?: Record<string, { input: JSONSchema; output: JSONSchema }>
 }
 
+/**
+ * Observation hooks for editor tooling (completion, hover). They never change the result.
+ */
+export interface Probe {
+  /** an identifier (`name` step or `$variable`) with this exact spelling marks the cursor */
+  placeholder?: string
+  onPlaceholder?: (info: {
+    kind: 'field' | 'variable'
+    /** the types of the items a field would be looked up on */
+    items: Ty
+    /** variables visible at the cursor */
+    vars: Map<string, Ty>
+  }) => void
+  /** called for names, variables and calls with the type they evaluate to */
+  onNode?: (info: { start: number; end: number; ty: Ty; kind: 'field' | 'variable' | 'call'; name?: string }) => void
+}
+
 /** Same as {@link DryRunOptions}, but with values already converted to types. */
 export interface TyOptions {
   bindings?: Record<string, Ty>
   functions?: Record<string, { input: Ty; output: Ty }>
+  probe?: Probe
 }
 
 export interface DryRunResult {
@@ -102,6 +120,13 @@ class Env {
 
   get(name: string): Ty | undefined {
     return this.vars.get(name) ?? this.parent?.get(name)
+  }
+
+  /** every variable visible from here (inner scopes shadow outer ones) */
+  allVars(): Map<string, Ty> {
+    const out = this.parent ? this.parent.allVars() : new Map<string, Ty>()
+    for (const [k, v] of this.vars) out.set(k, v)
+    return out
   }
 
   child(over: { ctx?: Ty; parents?: Ty[]; narrowed?: ReadonlyMap<string, 'def' | 'truthy'> } = {}) {
@@ -283,7 +308,22 @@ class Inferer implements Helpers {
   /* ---------- variables, blocks, binding ---------- */
 
   private variable(n: Ast, env: Env): Ty {
+    const t = this.variableInner(n, env)
+    const probe = this.opts.probe
+    if (probe?.onNode && n.position !== undefined) {
+      const r = this.range(n)
+      probe.onNode({ start: r.start ?? 0, end: r.end ?? 0, ty: t, kind: 'variable', name: String(n.value) })
+    }
+    return t
+  }
+
+  private variableInner(n: Ast, env: Env): Ty {
     const name: string = n.value
+    const probe = this.opts.probe
+    if (probe?.placeholder !== undefined && '$' + name === probe.placeholder) {
+      probe.onPlaceholder?.({ kind: 'variable', items: env.ctx, vars: this.visibleVars(env) })
+      return ANY
+    }
     if (name === '') return env.ctx
     if (name === '$') return env.root
     const local = env.get(name)
@@ -302,6 +342,14 @@ class Inferer implements Helpers {
     }
     this.warn(`Variable $${name} is not defined; it evaluates to undefined.`, n, 'undefined-variable')
     return UNDEF
+  }
+
+  /** variables a user could reference: scoped ones, host bindings and host functions */
+  private visibleVars(env: Env): Map<string, Ty> {
+    const out = new Map<string, Ty>()
+    for (const [k, v] of Object.entries(this.opts.bindings ?? {})) out.set(k, v)
+    for (const [k, v] of env.allVars()) out.set(k, v)
+    return out
   }
 
   private block(n: Ast, env: Env): Ty {
@@ -364,7 +412,15 @@ class Inferer implements Helpers {
       const cons = step.type === 'unary' && step.value === '['
       let result: Ty
       if (step.type === 'name') {
+        const probe = this.opts.probe
+        if (probe?.placeholder !== undefined && step.value === probe.placeholder) {
+          probe.onPlaceholder?.({ kind: 'field', items, vars: this.visibleVars(penv) })
+        }
         result = this.lookupStep(items, step)
+        if (probe?.onNode && step.value !== probe.placeholder) {
+          const r = this.range(step)
+          probe.onNode({ start: r.start ?? 0, end: r.end ?? 0, ty: result, kind: 'field', name: String(step.value) })
+        }
       } else {
         result = NEVER
         for (const m of members(items)) {
@@ -831,6 +887,16 @@ class Inferer implements Helpers {
   }
 
   private callNode(n: Ast, env: Env, prepend?: Ty): Ty {
+    const t = this.callNodeInner(n, env, prepend)
+    const probe = this.opts.probe
+    if (probe?.onNode && n.procedure?.type === 'variable') {
+      const r = this.range(n)
+      probe.onNode({ start: r.start ?? 0, end: r.end ?? 0, ty: t, kind: 'call', name: String(n.procedure.value) })
+    }
+    return t
+  }
+
+  private callNodeInner(n: Ast, env: Env, prepend?: Ty): Ty {
     const proc: Ast = n.procedure
     const argNodes = n.arguments as Ast[]
     if (argNodes.some((a) => a.type === 'operator' && a.value === '?')) {
@@ -841,6 +907,11 @@ class Inferer implements Helpers {
     if (prepend !== undefined) args.unshift(prepend)
     if (proc.type === 'variable') {
       const name: string = proc.value
+      const probe = this.opts.probe
+      if (probe?.placeholder !== undefined && '$' + name === probe.placeholder) {
+        probe.onPlaceholder?.({ kind: 'variable', items: env.ctx, vars: this.visibleVars(env) })
+        return ANY
+      }
       const known =
         env.get(name) !== undefined ||
         this.opts.bindings?.[name] !== undefined ||

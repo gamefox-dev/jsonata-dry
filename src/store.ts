@@ -9,7 +9,10 @@ import {
 import { create } from 'zustand'
 import type { JSONSchema } from './dry'
 import { analyzeFlow, type FlowAnalysis } from './flow/analyze'
+import { fromSchema, removeUndef } from './dry'
+import { rng, sample } from './dry/sample'
 import { EXAMPLES } from './flow/examples'
+import { runFlow, type RunResult, type RunStep } from './flow/run'
 import {
   canConnect,
   handleKind,
@@ -29,7 +32,31 @@ export type Selection =
   | { kind: 'edge'; id: string }
   | { kind: 'type'; id: string }
   | { kind: 'function'; id: string }
+  | { kind: 'run' }
   | null
+
+/** what the canvas needs to know to show a run up to the current step */
+export interface RunView {
+  nodes: Record<
+    string,
+    { count: number; seqs: number[]; last: RunStep; current: boolean; error?: string; detached: boolean; iterations: number }
+  >
+  edges: Record<string, { value?: unknown; hasValue: boolean; trigger: boolean; current: boolean; detached: boolean }>
+  /** number of steps shown */
+  shown: number
+}
+
+export interface RunState {
+  /** JSON text of the input; null until the user (or the sample generator) provides one */
+  inputText: string | null
+  running: boolean
+  result: RunResult | null
+  parseError: string | null
+  /** index of the last step shown, or null for "the whole run" */
+  cursor: number | null
+  playing: boolean
+  view: RunView | null
+}
 
 interface Store {
   doc: FlowDoc
@@ -40,6 +67,7 @@ interface Store {
   version: number
   /** set by the canvas so the palette can drop nodes in the middle of the viewport */
   viewportCenter: (() => XYPosition) | null
+  run: RunState
 
   setSelection: (s: Selection) => void
   registerViewport: (fn: (() => XYPosition) | null) => void
@@ -61,6 +89,103 @@ interface Store {
 
   loadExample: (id: string) => void
   clear: () => void
+
+  setRunInput: (text: string | null) => void
+  startRun: (opts?: { play?: boolean }) => Promise<void>
+  setCursor: (cursor: number | null) => void
+  stepRun: (delta: number) => void
+  setPlaying: (playing: boolean) => void
+  clearRun: () => void
+  generateRunInput: (seed?: number) => void
+}
+
+const IDLE_RUN: RunState = {
+  inputText: null,
+  running: false,
+  result: null,
+  parseError: null,
+  cursor: null,
+  playing: false,
+  view: null,
+}
+
+/** the sample input for a document: a deterministic value of the input node's type */
+export function sampleInput(doc: FlowDoc, seed = 1): string {
+  const input = doc.nodes.find((n) => n.type === 'input')
+  if (!input || input.type !== 'input') return '{}'
+  const defs = Object.fromEntries(doc.types.map((t) => [t.name, t.spec.schema]))
+  const ty = removeUndef(fromSchema(input.data.spec.schema, { defs }))
+  return JSON.stringify(sample(ty, rng(seed)), null, 2) ?? 'null'
+}
+
+function buildRunView(doc: FlowDoc, result: RunResult, cursor: number | null): RunView {
+  const shown = cursor === null ? result.steps.length : Math.min(cursor + 1, result.steps.length)
+  const visible = result.steps.slice(0, shown)
+  const nodes: RunView['nodes'] = {}
+  const edges: RunView['edges'] = {}
+  const current = shown > 0 ? visible[shown - 1] : null
+  const loopIterations = new Map<string, number>()
+  const loopStep = new Map<string, RunStep>()
+
+  for (const s of visible) {
+    const n = nodes[s.nodeId]
+    nodes[s.nodeId] = {
+      count: (n?.count ?? 0) + 1,
+      seqs: [...(n?.seqs ?? []), s.seq],
+      last: s,
+      current: false,
+      error: s.error ?? n?.error,
+      detached: s.detached,
+      iterations: 0,
+    }
+    loopStep.set(s.nodeId, s)
+    for (const sc of s.scope) {
+      loopIterations.set(sc.loopId, Math.max(loopIterations.get(sc.loopId) ?? 0, sc.index + 1))
+    }
+  }
+  if (current) nodes[current.nodeId].current = true
+  for (const [id, it] of loopIterations) if (nodes[id]) nodes[id].iterations = it
+
+  for (const e of doc.edges) {
+    const sh = e.sourceHandle ?? 'out'
+    const src = nodes[e.source]
+    if (!src) continue
+    const step = loopStep.get(e.source) as RunStep
+    const trigger = sh === 'done' || sh === 'yes' || sh === 'no' || sh === 'each'
+    let active = false
+    let value: unknown
+    let hasValue = false
+    if (trigger) {
+      if (sh === 'each') active = src.iterations > 0
+      else active = nodes[e.source].last.fired.includes(sh) || visible.some((v) => v.nodeId === e.source && v.fired.includes(sh))
+    } else if (nodes[e.source] && (sh === 'item' || sh === 'index' || sh === 'acc')) {
+      active = src.iterations > 0
+      if (active && sh === 'item') {
+        const items = step.inputs.in as unknown[] | undefined
+        value = items?.[src.iterations - 1]
+        hasValue = true
+      } else if (active && sh === 'index') {
+        value = src.iterations - 1
+        hasValue = true
+      }
+    } else {
+      const outStep = [...visible].reverse().find((v) => v.nodeId === e.source && sh in v.outputs)
+      if (outStep) {
+        active = true
+        value = outStep.outputs[sh]
+        hasValue = true
+      }
+    }
+    if (!active) continue
+    edges[e.id] = {
+      value,
+      hasValue,
+      trigger,
+      detached: src.detached,
+      current: !!current && (e.source === current.nodeId || e.target === current.nodeId),
+    }
+  }
+  return { nodes, edges, shown }
 }
 
 const STORAGE_KEY = 'jsonata-dry:doc:v1'
@@ -171,6 +296,7 @@ export const useStore = create<Store>()((set, get) => {
     exampleId: initial.exampleId,
     version: 0,
     viewportCenter: null,
+    run: IDLE_RUN,
 
     setSelection: (selection) => set({ selection }),
     registerViewport: (viewportCenter) => set({ viewportCenter }),
@@ -323,10 +449,80 @@ export const useStore = create<Store>()((set, get) => {
     loadExample: (id) => {
       const ex = EXAMPLES.find((e) => e.id === id)
       if (!ex) return
-      commit(normalize(ex.build()), { selection: null, exampleId: id, version: get().version + 1 })
+      commit(normalize(ex.build()), {
+        selection: null,
+        exampleId: id,
+        version: get().version + 1,
+        run: IDLE_RUN,
+      })
     },
+    setRunInput: (text) => set({ run: { ...get().run, inputText: text, parseError: null } }),
+
+    generateRunInput: (seed = Math.floor(Math.random() * 1e6)) =>
+      set({ run: { ...get().run, inputText: sampleInput(get().doc, seed), parseError: null } }),
+
+    startRun: async (opts = {}) => {
+      const { doc, run } = get()
+      const text = run.inputText ?? sampleInput(doc)
+      let input: unknown
+      try {
+        input = text.trim() === '' ? undefined : JSON.parse(text)
+      } catch (e) {
+        set({ run: { ...run, inputText: text, parseError: (e as Error).message, result: null, view: null, playing: false } })
+        return
+      }
+      set({ run: { ...run, inputText: text, running: true, parseError: null, playing: false } })
+      const result = await runFlow(doc, input)
+      const play = opts.play ?? true
+      const cursor = play ? 0 : null
+      set({
+        run: {
+          ...get().run,
+          inputText: text,
+          running: false,
+          result,
+          cursor,
+          playing: play && result.steps.length > 1,
+          view: buildRunView(get().doc, result, cursor),
+        },
+      })
+    },
+
+    setCursor: (cursor) => {
+      const { run, doc } = get()
+      if (!run.result) return
+      set({ run: { ...run, cursor, playing: false, view: buildRunView(doc, run.result, cursor) } })
+    },
+
+    stepRun: (delta) => {
+      const { run, doc } = get()
+      if (!run.result) return
+      const n = run.result.steps.length
+      const at = run.cursor === null ? n - 1 : run.cursor
+      const next = Math.max(0, Math.min(n - 1, at + delta))
+      const playing = run.playing && next < n - 1
+      set({ run: { ...run, cursor: next, playing, view: buildRunView(doc, run.result, next) } })
+    },
+
+    setPlaying: (playing) => {
+      const { run, doc } = get()
+      if (!run.result) return
+      // pressing play at the end starts over
+      const atEnd = run.cursor === null || run.cursor >= run.result.steps.length - 1
+      if (playing && atEnd) {
+        set({ run: { ...run, cursor: 0, playing: true, view: buildRunView(doc, run.result, 0) } })
+      } else set({ run: { ...run, playing } })
+    },
+
+    clearRun: () => set({ run: { ...IDLE_RUN, inputText: get().run.inputText } }),
+
     clear: () =>
-      commit(normalize(emptyDoc()), { selection: null, exampleId: null, version: get().version + 1 }),
+      commit(normalize(emptyDoc()), {
+        selection: null,
+        exampleId: null,
+        version: get().version + 1,
+        run: IDLE_RUN,
+      }),
   }
 })
 

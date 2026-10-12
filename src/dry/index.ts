@@ -1,5 +1,5 @@
 export { dryRun, dryRunTy } from './infer'
 export type { Diagnostic, DryRunOptions, DryRunResult, TyOptions } from './infer'
-export { fromSchema, toSchema, fromValue, refName } from './schema'
+export { fromSchema, toSchema, fromValue, refName, standardizeRefs } from './schema'
 export type { JSONSchema, JSONSchemaObject, SchemaContext } from './schema'
 export * from './ty'

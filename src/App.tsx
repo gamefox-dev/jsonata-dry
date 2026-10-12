@@ -32,6 +32,9 @@ function Toolbar() {
   const exampleId = useStore((s) => s.exampleId)
   const loadExample = useStore((s) => s.loadExample)
   const clear = useStore((s) => s.clear)
+  const setSelection = useStore((s) => s.setSelection)
+  const startRun = useStore((s) => s.startRun)
+  const running = useStore((s) => s.run.running)
   const errors = analysis.messages.filter((m) => m.severity === 'error').length
   const warnings = analysis.messages.filter((m) => m.severity === 'warning').length
   const example = EXAMPLES.find((e) => e.id === exampleId)
@@ -56,6 +59,18 @@ function Toolbar() {
           </option>
         ))}
       </select>
+      <button
+        type="button"
+        disabled={running}
+        className="rounded bg-emerald-500 px-3 py-1 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
+        title="Execute the flow with a sample (or your own) input and replay it on the canvas"
+        onClick={() => {
+          setSelection({ kind: 'run' })
+          void startRun()
+        }}
+      >
+        ▶ Run
+      </button>
       <button
         type="button"
         className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"

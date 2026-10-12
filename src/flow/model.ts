@@ -26,6 +26,11 @@ export interface FnDef {
   description?: string
   input: SchemaSpec
   output: SchemaSpec
+  /**
+   * JSONata expression standing in for the real implementation when the flow is run
+   * (`$` is the argument). When empty, a sample of the output type is generated.
+   */
+  mock?: string
 }
 
 /* ---------- nodes ---------- */

@@ -3,7 +3,7 @@ import jsonata from 'jsonata'
 import { dryRun } from '../src/dry'
 import { fromSchema } from '../src/dry/schema'
 import { matches, removeUndef, show } from '../src/dry/ty'
-import { rng, sample } from './sample'
+import { rng, sample } from '../src/dry/sample'
 import type { JSONSchema } from '../src/dry'
 
 const order: JSONSchema = {
