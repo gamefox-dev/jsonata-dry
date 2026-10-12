@@ -1,0 +1,12 @@
+{
+  // Static-assets-only Worker: serves the Vite build from ./dist
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jsonata-dry",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  // wrangler creates the DNS record + certificate for the custom domain on deploy
+  "routes": [{ "pattern": "jsonata-dry.gamefox.vn", "custom_domain": true }]
+}

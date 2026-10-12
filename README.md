@@ -27,7 +27,10 @@ bun install
 bun run dev      # the flow editor
 bun test         # engine, flow analysis, TypeBox bridge, differential fuzz against real JSONata
 bun run build
+bun run deploy   # build + `wrangler deploy` to Cloudflare Workers (static assets), see wrangler.jsonc
 ```
+
+Live: <https://jsonata-dry.gamefox.vn>
 
 ## What the dry-run knows
 
